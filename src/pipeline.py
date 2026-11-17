@@ -179,3 +179,87 @@ def perform_eda(df: pd.DataFrame):
     plt.close()
 
     return corr_matrix
+
+def split\_dataset(df: pd.DataFrame):
+
+&#x20;   """
+
+&#x20;   Separação clara e estratificada entre:
+
+&#x20;     - Treino: 70% (398 registros)
+
+&#x20;     - Validação: 15% (85 registros)
+
+&#x20;     - Teste: 15% (86 registros)
+
+&#x20;   Realizada ANTES de qualquer pré-processamento para impedir Data Leakage.
+
+&#x20;   """
+
+&#x20;   feature\_cols = \[c for c in df.columns if c not in ("target", "diagnostico")]
+
+&#x20;   X = df\[feature\_cols].copy()
+
+&#x20;   y = df\["target"].copy()
+
+
+
+&#x20;   # 1º Split: separa 70% para Treino e 30% para um conjunto temporário (Validação + Teste)
+
+&#x20;   X\_train, X\_temp, y\_train, y\_temp = train\_test\_split(
+
+&#x20;       X, y, test\_size=0.30, stratify=y, random\_state=RANDOM\_STATE
+
+&#x20;   )
+
+
+
+&#x20;   # 2º Split: divide os 30% temporários exatamente na metade (50% de 30% = 15% cada)
+
+&#x20;   X\_val, X\_test, y\_val, y\_test = train\_test\_split(
+
+&#x20;       X\_temp, y\_temp, test\_size=0.50, stratify=y\_temp, random\_state=RANDOM\_STATE
+
+&#x20;   )
+
+
+
+&#x20;   ensure\_directories()
+
+&#x20;   X\_train.assign(target=y\_train).to\_csv(os.path.join(DATA\_PROCESSED\_DIR, "train.csv"), index=False)
+
+&#x20;   X\_val.assign(target=y\_val).to\_csv(os.path.join(DATA\_PROCESSED\_DIR, "val.csv"), index=False)
+
+&#x20;   X\_test.assign(target=y\_test).to\_csv(os.path.join(DATA\_PROCESSED\_DIR, "test.csv"), index=False)
+
+
+
+&#x20;   return X\_train, X\_val, X\_test, y\_train, y\_val, y\_test
+
+
+
+
+
+def build\_preprocessor() -> Pipeline:
+
+&#x20;   """
+
+&#x20;   Constrói o Pipeline de transformação de variáveis numéricas:
+
+&#x20;     1. SimpleImputer(strategy='median'): substitui eventuais dados faltantes pela mediana do treino.
+
+&#x20;     2. StandardScaler(): padroniza para média 0 e desvio-padrão 1 (z = (x - u) / s).
+
+&#x20;   """
+
+&#x20;   return Pipeline(
+
+&#x20;       steps=\[
+
+&#x20;           ("imputer", SimpleImputer(strategy="median")),
+
+&#x20;           ("scaler", StandardScaler()),
+
+&#x20;       ]
+
+&#x20;   )
