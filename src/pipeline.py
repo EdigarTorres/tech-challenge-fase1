@@ -447,3 +447,256 @@ class BreastCancerPredictor:
             )
 
         return results
+
+def train_and_evaluate_all():
+    """
+    Orquestra todo o ciclo de vida:
+
+    1. Carregamento e EDA
+    2. Split 70/15/15
+    3. Validação cruzada 5-Fold e treinamento
+    4. Avaliação em validação e teste
+    5. Gráficos de matriz de confusão, curva ROC, feature importance e SHAP
+    6. Persistência dos modelos (.joblib) e metadados (.json)
+    """
+    ensure_directories()
+
+    df = load_and_prepare_data()
+    perform_eda(df)
+
+    X_train, X_val, X_test, y_train, y_val, y_test = split_dataset(df)
+    models = build_models()
+
+    cv_results = run_cross_validation(models, X_train, y_train)
+    validation_results = []
+    test_results = []
+    trained_models = {}
+
+    for name, pipeline in models.items():
+        pipeline.fit(X_train, y_train)
+        trained_models[name] = pipeline
+
+        validation_results.append(
+            evaluate_model(pipeline, X_val, y_val, "Validação", name)
+        )
+        test_results.append(
+            evaluate_model(pipeline, X_test, y_test, "Teste", name)
+        )
+
+    df_cv_results = pd.DataFrame(cv_results)
+    df_val_results = pd.DataFrame(validation_results)
+    df_test_results = pd.DataFrame(test_results)
+
+    # Exporta CSVs de métricas para reports/metrics/
+    df_cv_results.to_csv(
+        os.path.join(METRICS_DIR, "cross_validation_metrics.csv"),
+        index=False,
+    )
+    df_val_results.to_csv(
+        os.path.join(METRICS_DIR, "validation_metrics.csv"),
+        index=False,
+    )
+    df_test_results.to_csv(
+        os.path.join(METRICS_DIR, "test_metrics.csv"),
+        index=False,
+    )
+
+    # Gráfico 4: Matrizes de Confusão Lado a Lado no Teste
+    fig, axes = plt.subplots(1, 3, figsize=(16, 4.8))
+
+    for idx, (name, pipeline) in enumerate(trained_models.items()):
+        y_pred = pipeline.predict(X_test)
+        cm = confusion_matrix(y_test, y_pred)
+
+        sns.heatmap(
+            cm,
+            annot=True,
+            fmt="d",
+            cmap="Blues",
+            cbar=False,
+            xticklabels=["Benigno (0)", "Maligno (1)"],
+            yticklabels=["Benigno (0)", "Maligno (1)"],
+            ax=axes[idx],
+            annot_kws={"size": 13, "weight": "bold"},
+        )
+        axes[idx].set_title(
+            f"{name}\n(Conjunto de Teste)",
+            fontsize=12,
+            fontweight="bold",
+        )
+        axes[idx].set_xlabel("Predição do Modelo")
+        axes[idx].set_ylabel("Diagnóstico Real")
+
+    plt.suptitle(
+        "Matrizes de Confusão no Conjunto de Teste "
+        "(Foco em Minimizar Falsos Negativos)",
+        fontsize=14,
+        fontweight="bold",
+    )
+    plt.tight_layout()
+    plt.savefig(
+        os.path.join(FIGURES_DIR, "04_matrizes_confusao_teste.png"),
+        dpi=150,
+    )
+    plt.close()
+
+    # Gráfico 5: Curva ROC Comparativa no Teste
+    plt.figure(figsize=(8, 6))
+
+    for name, pipeline in trained_models.items():
+        y_proba = pipeline.predict_proba(X_test)[:, 1]
+        fpr, tpr, _ = roc_curve(y_test, y_proba)
+        auc_val = roc_auc_score(y_test, y_proba)
+        plt.plot(fpr, tpr, lw=2.2, label=f"{name} (AUC = {auc_val:.4f})")
+
+    plt.plot([0, 1], [0, 1], "k--", lw=1.2, label="Aleatório (AUC = 0.5000)")
+    plt.xlabel("Taxa de Falsos Positivos (1 - Especificidade)")
+    plt.ylabel("Taxa de Verdadeiros Positivos (Recall / Sensibilidade)")
+    plt.title(
+        "Curva ROC Comparativa - Conjunto de Teste",
+        fontsize=13,
+        fontweight="bold",
+    )
+    plt.legend(loc="lower right")
+    plt.tight_layout()
+    plt.savefig(
+        os.path.join(FIGURES_DIR, "05_curva_roc_comparativa.png"),
+        dpi=150,
+    )
+    plt.close()
+
+    # Gráfico 6: Feature Importance Nativo da Random Forest
+    rf_pipeline = trained_models["Random Forest"]
+    rf_clf = rf_pipeline.named_steps["classifier"]
+
+    importances = (
+        pd.Series(rf_clf.feature_importances_, index=X_train.columns)
+        .sort_values(ascending=True)
+        .tail(15)
+    )
+
+    plt.figure(figsize=(9, 6))
+    importances.plot(kind="barh", color="#3498db")
+    plt.title(
+        "Top 15 Variáveis Mais Importantes "
+        "(Feature Importance - Random Forest)",
+        fontsize=13,
+        fontweight="bold",
+    )
+    plt.xlabel("Importância Relativa (Redução de Impureza de Gini)")
+    plt.tight_layout()
+    plt.savefig(
+        os.path.join(FIGURES_DIR, "06_feature_importance_rf.png"),
+        dpi=150,
+    )
+    plt.close()
+
+    # Gráficos 7 e 8: Interpretabilidade com SHAP
+    preprocessor = rf_pipeline.named_steps["preprocessor"]
+    X_test_scaled = pd.DataFrame(
+        preprocessor.transform(X_test),
+        columns=X_test.columns,
+        index=X_test.index,
+    )
+
+    explainer = shap.TreeExplainer(rf_clf)
+    shap_values = explainer(X_test_scaled)
+
+    # Seleciona os valores SHAP referentes à classe 1 (Maligno)
+    if len(shap_values.shape) == 3:
+        shap_values_maligno = shap_values[:, :, 1]
+    else:
+        shap_values_maligno = shap_values
+
+    # 7a. Summary Plot Global (Beeswarm)
+    plt.figure(figsize=(10, 7))
+    shap.summary_plot(
+        shap_values_maligno,
+        X_test_scaled,
+        show=False,
+        max_display=15,
+    )
+    plt.title(
+        "SHAP Summary Plot - Impacto Global das Variáveis no Risco Maligno",
+        fontsize=13,
+        fontweight="bold",
+    )
+    plt.tight_layout()
+    plt.savefig(
+        os.path.join(FIGURES_DIR, "07_shap_summary_plot.png"),
+        dpi=150,
+        bbox_inches="tight",
+    )
+    plt.close()
+
+    # 7b. Waterfall Plot Individual (paciente maligno do conjunto de teste)
+    malign_indices = np.where(y_test.values == 1)[0]
+    sample_idx = int(malign_indices[0])
+
+    plt.figure(figsize=(10, 6))
+    shap.plots.waterfall(
+        shap_values_maligno[sample_idx],
+        max_display=12,
+        show=False,
+    )
+    plt.title(
+        f"Explicação Individual SHAP (Waterfall) - "
+        f"Paciente #{sample_idx} (Diagnóstico: Maligno)",
+        fontsize=12,
+        fontweight="bold",
+    )
+    plt.tight_layout()
+    plt.savefig(
+        os.path.join(FIGURES_DIR, "08_shap_waterfall_paciente.png"),
+        dpi=150,
+        bbox_inches="tight",
+    )
+    plt.close()
+
+    # Persistência dos modelos e metadados
+    joblib.dump(
+        rf_pipeline,
+        os.path.join(MODELS_DIR, "modelo_final.joblib"),
+    )
+    joblib.dump(
+        trained_models,
+        os.path.join(MODELS_DIR, "todos_modelos.joblib"),
+    )
+
+    metadata = {
+        "feature_names": list(X_train.columns),
+        "feature_medians": X_train.median().to_dict(),
+        "feature_mins": X_train.min().to_dict(),
+        "feature_maxs": X_train.max().to_dict(),
+        "cv_metrics": cv_results,
+        "validation_metrics": validation_results,
+        "test_metrics": test_results,
+    }
+
+    with open(
+        os.path.join(MODELS_DIR, "metadata.json"),
+        "w",
+        encoding="utf-8",
+    ) as file:
+        json.dump(metadata, file, indent=2, ensure_ascii=False)
+
+    return df_val_results, df_test_results
+
+
+if __name__ == "__main__":
+    print(
+        "Iniciando pipeline de EDA, pré-processamento, validação cruzada, "
+        "treinamento, avaliação e SHAP..."
+    )
+    val_df, test_df = train_and_evaluate_all()
+
+    print("\n=== RESULTADOS NA VALIDAÇÃO (15%) ===")
+    print(val_df.to_string(index=False))
+
+    print("\n=== RESULTADOS FINAIS NO TESTE (15%) ===")
+    print(test_df.to_string(index=False))
+
+    print(f"\nModelos salvos em: {MODELS_DIR}")
+    print(f"Gráficos salvos em: {FIGURES_DIR}")
+
+    

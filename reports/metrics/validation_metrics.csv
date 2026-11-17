@@ -1,0 +1,4 @@
+Modelo,Conjunto,Accuracy,Precision,Recall (Sensibilidade),Especificidade,F1-Score,ROC-AUC,Falsos Negativos (FN),Falsos Positivos (FP),Verdadeiros Positivos (TP),Verdadeiros Negativos (TN)
+Regressão Logística,Validação,0.9647,1.0,0.9062,1.0,0.9508,0.9959,3,0,29,53
+Árvore de Decisão,Validação,0.9059,0.9615,0.7812,0.9811,0.8621,0.908,7,1,25,52
+Random Forest,Validação,0.9529,1.0,0.875,1.0,0.9333,0.9947,4,0,28,53

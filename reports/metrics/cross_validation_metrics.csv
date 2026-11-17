@@ -1,0 +1,4 @@
+Modelo,CV Accuracy (Média),CV Precision (Média),CV Recall (Média),CV F1-Score (Média),CV ROC-AUC (Média)
+Regressão Logística,0.9674,0.9568,0.9593,0.9572,0.9915
+Árvore de Decisão,0.8995,0.8652,0.8782,0.8661,0.9441
+Random Forest,0.9422,0.9224,0.9317,0.9241,0.9874
