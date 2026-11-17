@@ -180,86 +180,270 @@ def perform_eda(df: pd.DataFrame):
 
     return corr_matrix
 
-def split\_dataset(df: pd.DataFrame):
+def split_dataset(df: pd.DataFrame):
+    """
+    Separa os dados de forma estratificada em:
 
-&#x20;   """
+      - Treino: 70% (398 registros)
+      - Validação: 15% (85 registros)
+      - Teste: 15% (86 registros)
 
-&#x20;   Separação clara e estratificada entre:
+    A separação é feita antes do pré-processamento para evitar data leakage.
+    """
+    feature_cols = [c for c in df.columns if c not in ("target", "diagnostico")]
+    X = df[feature_cols].copy()
+    y = df["target"].copy()
 
-&#x20;     - Treino: 70% (398 registros)
+    # Separa 70% para treino e 30% para validação e teste.
+    X_train, X_temp, y_train, y_temp = train_test_split(
+        X,
+        y,
+        test_size=0.30,
+        stratify=y,
+        random_state=RANDOM_STATE,
+    )
 
-&#x20;     - Validação: 15% (85 registros)
+    # Divide o conjunto temporário igualmente entre validação e teste.
+    X_val, X_test, y_val, y_test = train_test_split(
+        X_temp,
+        y_temp,
+        test_size=0.50,
+        stratify=y_temp,
+        random_state=RANDOM_STATE,
+    )
 
-&#x20;     - Teste: 15% (86 registros)
+    ensure_directories()
+    X_train.assign(target=y_train).to_csv(
+        os.path.join(DATA_PROCESSED_DIR, "train.csv"), index=False
+    )
+    X_val.assign(target=y_val).to_csv(
+        os.path.join(DATA_PROCESSED_DIR, "val.csv"), index=False
+    )
+    X_test.assign(target=y_test).to_csv(
+        os.path.join(DATA_PROCESSED_DIR, "test.csv"), index=False
+    )
 
-&#x20;   Realizada ANTES de qualquer pré-processamento para impedir Data Leakage.
-
-&#x20;   """
-
-&#x20;   feature\_cols = \[c for c in df.columns if c not in ("target", "diagnostico")]
-
-&#x20;   X = df\[feature\_cols].copy()
-
-&#x20;   y = df\["target"].copy()
-
-
-
-&#x20;   # 1º Split: separa 70% para Treino e 30% para um conjunto temporário (Validação + Teste)
-
-&#x20;   X\_train, X\_temp, y\_train, y\_temp = train\_test\_split(
-
-&#x20;       X, y, test\_size=0.30, stratify=y, random\_state=RANDOM\_STATE
-
-&#x20;   )
-
-
-
-&#x20;   # 2º Split: divide os 30% temporários exatamente na metade (50% de 30% = 15% cada)
-
-&#x20;   X\_val, X\_test, y\_val, y\_test = train\_test\_split(
-
-&#x20;       X\_temp, y\_temp, test\_size=0.50, stratify=y\_temp, random\_state=RANDOM\_STATE
-
-&#x20;   )
-
-
-
-&#x20;   ensure\_directories()
-
-&#x20;   X\_train.assign(target=y\_train).to\_csv(os.path.join(DATA\_PROCESSED\_DIR, "train.csv"), index=False)
-
-&#x20;   X\_val.assign(target=y\_val).to\_csv(os.path.join(DATA\_PROCESSED\_DIR, "val.csv"), index=False)
-
-&#x20;   X\_test.assign(target=y\_test).to\_csv(os.path.join(DATA\_PROCESSED\_DIR, "test.csv"), index=False)
+    return X_train, X_val, X_test, y_train, y_val, y_test
 
 
+def build_preprocessor() -> Pipeline:
+    """
+    Cria o pipeline de pré-processamento numérico:
+      1. Substitui valores faltantes pela mediana.
+      2. Padroniza os valores usando média 0 e desvio-padrão 1.
+    """
+    return Pipeline(
+        steps=[
+            ("imputer", SimpleImputer(strategy="median")),
+            ("scaler", StandardScaler()),
+        ]
+    )
 
-&#x20;   return X\_train, X\_val, X\_test, y\_train, y\_val, y\_test
+def build_models() -> dict:
+    """
+    Instancia 3 arquiteturas distintas de Machine Learning acopladas ao Pipeline:
+
+    1. Regressão Logística (modelo linear paramétrico)
+    2. Árvore de Decisão (modelo não linear baseado em regras de corte)
+    3. Random Forest (ensemble de 200 árvores via bagging)
+    """
+    return {
+        "Regressão Logística": Pipeline(
+            steps=[
+                ("preprocessor", build_preprocessor()),
+                (
+                    "classifier",
+                    LogisticRegression(
+                        class_weight="balanced",
+                        max_iter=1000,
+                        random_state=RANDOM_STATE,
+                    ),
+                ),
+            ]
+        ),
+        "Árvore de Decisão": Pipeline(
+            steps=[
+                ("preprocessor", build_preprocessor()),
+                (
+                    "classifier",
+                    DecisionTreeClassifier(
+                        max_depth=4,
+                        min_samples_leaf=5,
+                        class_weight="balanced",
+                        random_state=RANDOM_STATE,
+                    ),
+                ),
+            ]
+        ),
+        "Random Forest": Pipeline(
+            steps=[
+                ("preprocessor", build_preprocessor()),
+                (
+                    "classifier",
+                    RandomForestClassifier(
+                        n_estimators=200,
+                        max_depth=6,
+                        min_samples_leaf=2,
+                        class_weight="balanced",
+                        random_state=RANDOM_STATE,
+                        n_jobs=-1,
+                    ),
+                ),
+            ]
+        ),
+    }
 
 
+def evaluate_model(
+    model: Pipeline,
+    X: pd.DataFrame,
+    y: pd.Series,
+    dataset_name: str,
+    model_name: str,
+) -> dict:
+    """
+    Avalia um modelo treinado, retornando métricas globais e a decomposição
+    clínica da matriz de confusão (TP, TN, FP e FN).
+    """
+    y_pred = model.predict(X)
+    y_proba = model.predict_proba(X)[:, 1]
+    cm = confusion_matrix(y, y_pred)
+    tn, fp, fn, tp = cm.ravel()
+
+    return {
+        "Modelo": model_name,
+        "Conjunto": dataset_name,
+        "Accuracy": round(accuracy_score(y, y_pred), 4),
+        "Precision": round(
+            precision_score(y, y_pred, zero_division=0), 4
+        ),
+        "Recall (Sensibilidade)": round(
+            recall_score(y, y_pred, zero_division=0), 4
+        ),
+        "Especificidade": round(
+            tn / (tn + fp) if (tn + fp) > 0 else 0.0, 4
+        ),
+        "F1-Score": round(f1_score(y, y_pred, zero_division=0), 4),
+        "ROC-AUC": round(roc_auc_score(y, y_proba), 4),
+        "Falsos Negativos (FN)": int(fn),
+        "Falsos Positivos (FP)": int(fp),
+        "Verdadeiros Positivos (TP)": int(tp),
+        "Verdadeiros Negativos (TN)": int(tn),
+    }
 
 
+def run_cross_validation(
+    models: dict,
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+) -> list:
+    """
+    Executa validação cruzada estratificada em 5 dobras no conjunto
+    de treinamento para medir a estabilidade estatística.
+    """
+    skf = StratifiedKFold(
+        n_splits=5,
+        shuffle=True,
+        random_state=RANDOM_STATE,
+    )
+    scoring = ["accuracy", "precision", "recall", "f1", "roc_auc"]
+    cv_results = []
 
-def build\_preprocessor() -> Pipeline:
+    for name, pipeline in models.items():
+        scores = cross_validate(
+            pipeline,
+            X_train,
+            y_train,
+            cv=skf,
+            scoring=scoring,
+            n_jobs=-1,
+        )
+        cv_results.append(
+            {
+                "Modelo": name,
+                "CV Accuracy (Média)": round(
+                    float(np.mean(scores["test_accuracy"])), 4
+                ),
+                "CV Precision (Média)": round(
+                    float(np.mean(scores["test_precision"])), 4
+                ),
+                "CV Recall (Média)": round(
+                    float(np.mean(scores["test_recall"])), 4
+                ),
+                "CV F1-Score (Média)": round(
+                    float(np.mean(scores["test_f1"])), 4
+                ),
+                "CV ROC-AUC (Média)": round(
+                    float(np.mean(scores["test_roc_auc"])), 4
+                ),
+            }
+        )
 
-&#x20;   """
+    return cv_results
 
-&#x20;   Constrói o Pipeline de transformação de variáveis numéricas:
 
-&#x20;     1. SimpleImputer(strategy='median'): substitui eventuais dados faltantes pela mediana do treino.
+class BreastCancerPredictor:
+    """
+    Carrega o modelo persistido (.joblib), valida as colunas de entrada
+    e retorna as previsões.
+    """
 
-&#x20;     2. StandardScaler(): padroniza para média 0 e desvio-padrão 1 (z = (x - u) / s).
+    def __init__(self, model_path: str = None):
+        if model_path is None:
+            model_path = os.path.join(MODELS_DIR, "modelo_final.joblib")
 
-&#x20;   """
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(
+                f"Modelo não encontrado em: {model_path}. "
+                "Execute src/pipeline.py primeiro."
+            )
 
-&#x20;   return Pipeline(
+        self.model = joblib.load(model_path)
 
-&#x20;       steps=\[
+        meta_path = os.path.join(MODELS_DIR, "metadata.json")
+        if os.path.exists(meta_path):
+            with open(meta_path, "r", encoding="utf-8") as file:
+                self.metadata = json.load(file)
+            self.expected_features = self.metadata["feature_names"]
+        else:
+            self.expected_features = list(
+                load_breast_cancer().feature_names
+            )
 
-&#x20;           ("imputer", SimpleImputer(strategy="median")),
+    def validate_input(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Garante que o DataFrame contenha todas as variáveis exigidas."""
+        if not isinstance(df, pd.DataFrame):
+            raise TypeError(
+                "Os dados de entrada devem ser um pandas.DataFrame."
+            )
 
-&#x20;           ("scaler", StandardScaler()),
+        missing = [
+            column
+            for column in self.expected_features
+            if column not in df.columns
+        ]
+        if missing:
+            raise ValueError(f"Colunas obrigatórias ausentes: {missing}")
 
-&#x20;       ]
+        return df[self.expected_features].copy()
 
-&#x20;   )
+    def predict(self, df: pd.DataFrame, threshold: float = 0.50) -> list:
+        """Retorna o rótulo clínico previsto e as probabilidades."""
+        X_valid = self.validate_input(df)
+        probas = self.model.predict_proba(X_valid)[:, 1]
+        results = []
+
+        for prob in probas:
+            is_malignant = float(prob) >= threshold
+            results.append(
+                {
+                    "diagnostico_previsto": (
+                        "Maligno" if is_malignant else "Benigno"
+                    ),
+                    "target_previsto": 1 if is_malignant else 0,
+                    "probabilidade_maligno": round(float(prob), 4),
+                    "probabilidade_benigno": round(1.0 - float(prob), 4),
+                }
+            )
+
+        return results
